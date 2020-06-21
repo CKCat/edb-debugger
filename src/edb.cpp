@@ -96,7 +96,7 @@ bool function_symbol_base(edb::address_t address, QString *value, int *offset) {
 }
 }
 
-const char version[] = "1.1.0";
+const char version[] = "1.2.0";
 
 namespace internal {
 
@@ -234,7 +234,11 @@ IAnalyzer *set_analyzer(IAnalyzer *p) {
 // Desc:
 //------------------------------------------------------------------------------
 IAnalyzer *analyzer() {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+	return g_Analyzer.loadRelaxed();
+#else
 	return g_Analyzer.load();
+#endif
 }
 
 //------------------------------------------------------------------------------

@@ -17,7 +17,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #include "FloatX.h"
-#include "Util.h"
+#include "util/Float.h"
 
 #include <iomanip>
 #include <sstream>
@@ -28,6 +28,17 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #if defined(HAVE_GDTOA)
 #include <gdtoa-desktop.h>
+#endif
+
+#ifdef _MSC_VER
+extern "C" EDB_EXPORT void __fastcall float64_to_float80(const void *src, void *dest);
+
+// NOTE(eteran): this thin wrapper function make look pointless... and it REALLY does.
+// However, I could not get plugins to be able to see the functions defined in .asm files
+// unless I wrapped them in a concrete function like this. It's dumb, but it works
+void convert_real64_to_real80(const void *src, void *dst) {
+	float64_to_float80(src, dst);
+}
 #endif
 
 namespace {

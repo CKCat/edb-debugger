@@ -44,9 +44,7 @@ void ByteShiftArray::swap(ByteShiftArray &other) {
 ByteShiftArray &ByteShiftArray::shl() {
 
 	if (data_.size() == maxSize_) {
-		for (int i = 1; i < data_.size(); ++i) {
-			data_[i - 1] = data_[i];
-		}
+		std::rotate(data_.begin(), data_.begin() + 1, data_.end());
 		data_.back() = 0;
 	} else {
 		data_.push_back(0);

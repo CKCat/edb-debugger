@@ -29,11 +29,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "PlatformCommon.h"
 #include "PlatformRegion.h"
 #include "PlatformThread.h"
-#include "Util.h"
 #include "edb.h"
 #include "libELF/elf_binary.h"
 #include "libELF/elf_model.h"
 #include "linker.h"
+#include "util/Container.h"
 
 #include <QByteArray>
 #include <QDateTime>
@@ -442,7 +442,11 @@ std::size_t PlatformProcess::readPages(edb::address_t address, void *buf, std::s
  */
 QDateTime PlatformProcess::startTime() const {
 	QFileInfo info(QString("/proc/%1/stat").arg(pid_));
+#if QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
+	return info.birthTime();
+#else
 	return info.created();
+#endif
 }
 
 /**
@@ -1183,6 +1187,22 @@ edb::address_t PlatformProcess::calculateMain() const {
 	}
 
 	return 0;
+}
+
+/**
+ * @brief PlatformProcess::stardardInput
+ * @return
+ */
+QString PlatformProcess::stardardInput() const {
+	return input_;
+}
+
+/**
+ * @brief PlatformProcess::stardardOutput
+ * @return
+ */
+QString PlatformProcess::stardardOutput() const {
+	return output_;
 }
 
 }

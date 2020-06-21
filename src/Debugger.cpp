@@ -72,6 +72,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <QLabel>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QScreen>
 #include <QSettings>
 #include <QShortcut>
 #include <QStringListModel>
@@ -627,8 +628,9 @@ QString Debugger::createTty() {
 						  << "--title" << tr("edb output");
 			} else if (command_info.fileName() == "konsole") {
 				proc_args << "--hide-menubar"
-						  << "--title" << tr("edb output") << "--nofork"
-						  << "-hold";
+						  << "--title" << tr("edb output")
+						  << "--nofork"
+						  << "--hold";
 			} else {
 				proc_args << "-title" << tr("edb output") << "-hold";
 			}
@@ -1069,9 +1071,14 @@ void Debugger::showEvent(QShowEvent *) {
 		break;
 	case Configuration::Centered: {
 		QDesktopWidget desktop;
-		QRect sg = desktop.screenGeometry();
-		int x    = (sg.width() - this->width()) / 2;
-		int y    = (sg.height() - this->height()) / 2;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 11, 0)
+		QScreen *screen = QGuiApplication::primaryScreen();
+		QRect sg        = screen->geometry();
+#else
+        QRect sg = desktop.screenGeometry();
+#endif
+		int x = (sg.width() - this->width()) / 2;
+		int y = (sg.height() - this->height()) / 2;
 		move(x, y);
 	} break;
 	case Configuration::Restore:
@@ -1131,7 +1138,7 @@ void Debugger::dropEvent(QDropEvent *event) {
 		if (!s.isEmpty()) {
 			Q_ASSERT(edb::v1::debugger_core);
 
-			commonOpen(s, QList<QByteArray>());
+			commonOpen(s, QList<QByteArray>(), QString(), QString());
 		}
 	}
 }
@@ -1685,10 +1692,10 @@ void Debugger::mnuStackPop() {
 void Debugger::on_cpuView_customContextMenuRequested(const QPoint &pos) {
 	QMenu menu;
 
-	auto displayMenu = new QMenu(tr("Display"));
+	auto displayMenu = new QMenu(tr("Display"), &menu);
 	displayMenu->addAction(QIcon::fromTheme(QString::fromUtf8("view-restore")), tr("Restore Column Defaults"), ui.cpuView, SLOT(resetColumns()));
 
-	auto editMenu = new QMenu(tr("&Edit"));
+	auto editMenu = new QMenu(tr("&Edit"), &menu);
 	editMenu->addAction(editBytesAction_);
 	editMenu->addAction(fillWithZerosAction_);
 	editMenu->addAction(fillWithNOPsAction_);
@@ -2608,7 +2615,7 @@ void Debugger::resumeExecution(ExceptionResume pass_exception, DebugMode mode, R
 
 			// if we are on a breakpoint, disable it
 			std::shared_ptr<IBreakpoint> bp;
-			if (flags == ResumeFlag::Forced) {
+			if (flags != ResumeFlag::Forced) {
 				State state;
 				thread->getState(&state);
 				bp = edb::v1::debugger_core->findBreakpoint(state.instructionPointer());
@@ -2961,20 +2968,26 @@ void Debugger::on_action_Restart_triggered() {
 
 		workingDirectory_      = edb::v1::debugger_core->process()->currentWorkingDirectory();
 		QList<QByteArray> args = edb::v1::debugger_core->process()->arguments();
-		const QString s        = edb::v1::debugger_core->process()->executable();
+		const QString exe      = edb::v1::debugger_core->process()->executable();
+		const QString in       = edb::v1::debugger_core->process()->stardardInput();
+		const QString out      = edb::v1::debugger_core->process()->stardardOutput();
 
 		if (!args.empty()) {
 			args.removeFirst();
 		}
 
-		if (!s.isEmpty()) {
+		if (!exe.isEmpty()) {
 			detachFromProcess(KillOnDetach);
-			commonOpen(s, args);
+			commonOpen(exe, args, in, out);
 		}
 	} else {
-		const auto file = recentFileManager_->mostRecent();
-		if (commonOpen(file.first, file.second))
+		// TODO(eteran) pulling from the recent file mananger "works", but has
+		// a weird side effect, in that you can "restart" a process before you have
+		// run ANY, as long as your history isn't empty
+		const RecentFileManager::RecentFile file = recentFileManager_->mostRecent();
+		if (commonOpen(file.first, file.second, QString(), QString())) {
 			argumentsDialog_->setArguments(file.second);
+		}
 	}
 }
 
@@ -3005,7 +3018,7 @@ void Debugger::setupDataViews() {
 // Name: common_open
 // Desc:
 //------------------------------------------------------------------------------
-bool Debugger::commonOpen(const QString &s, const QList<QByteArray> &args) {
+bool Debugger::commonOpen(const QString &s, const QList<QByteArray> &args, const QString &input, const QString &output) {
 
 	// ensure that the previous running process (if any) is dealth with...
 	detachFromProcess(KillOnDetach);
@@ -3013,7 +3026,10 @@ bool Debugger::commonOpen(const QString &s, const QList<QByteArray> &args) {
 	bool ret = false;
 	ttyFile_ = createTty();
 
-	if (const Status status = edb::v1::debugger_core->open(s, workingDirectory_, args, ttyFile_)) {
+	QString process_input  = input.isNull() ? ttyFile_ : input;
+	QString process_output = output.isNull() ? ttyFile_ : output;
+
+	if (const Status status = edb::v1::debugger_core->open(s, workingDirectory_, args, process_input, process_output)) {
 		attachComplete();
 		setInitialBreakpoint(s);
 		ret = true;
@@ -3032,8 +3048,8 @@ bool Debugger::commonOpen(const QString &s, const QList<QByteArray> &args) {
 // Name: execute
 // Desc:
 //------------------------------------------------------------------------------
-void Debugger::execute(const QString &program, const QList<QByteArray> &args) {
-	if (commonOpen(program, args)) {
+void Debugger::execute(const QString &program, const QList<QByteArray> &args, const QString &input, const QString &output) {
+	if (commonOpen(program, args, input, output)) {
 		recentFileManager_->addFile(program, args);
 		argumentsDialog_->setArguments(args);
 	}
@@ -3043,11 +3059,11 @@ void Debugger::execute(const QString &program, const QList<QByteArray> &args) {
 // Name: open_file
 // Desc:
 //------------------------------------------------------------------------------
-void Debugger::openFile(const QString &s, const QList<QByteArray> &a) {
-	if (!s.isEmpty()) {
-		lastOpenDirectory_ = QFileInfo(s).canonicalFilePath();
+void Debugger::openFile(const QString &filename, const QList<QByteArray> &args) {
+	if (!filename.isEmpty()) {
+		lastOpenDirectory_ = QFileInfo(filename).canonicalFilePath();
 
-		execute(s, a);
+		execute(filename, args, QString(), QString());
 	}
 }
 

@@ -1,6 +1,6 @@
 /*
 Copyright (C) 2006 - 2015 Evan Teran
-                          evan.teran@gmail.com
+						  evan.teran@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -32,6 +32,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "Unix.h"
 #include "edb.h"
 #include "string_hash.h"
+#include "util/Container.h"
+#include "util/String.h"
 
 #include <QDebug>
 #include <QDir>
@@ -80,7 +82,7 @@ namespace DebuggerCorePlugin {
 
 namespace {
 
-const size_t PageSize = 0x1000;
+constexpr size_t PageSize = 0x1000;
 
 /**
  * @brief disable_aslr
@@ -105,26 +107,11 @@ void disable_lazy_binding() {
 }
 
 /**
- * @brief is_numeric
- * @param s
- * @return true if the string only contains decimal digits
- */
-bool is_numeric(const QString &s) {
-	for (QChar ch : s) {
-		if (!ch.isDigit()) {
-			return false;
-		}
-	}
-
-	return true;
-}
-
-/**
  * @brief is_clone_event
  * @param status
  * @return
  */
-bool is_clone_event(int status) {
+constexpr bool is_clone_event(int status) {
 	return (status >> 8 == (SIGTRAP | (PTRACE_EVENT_CLONE << 8)));
 }
 
@@ -133,7 +120,7 @@ bool is_clone_event(int status) {
  * @param status
  * @return
  */
-bool is_exit_trace_event(int status) {
+constexpr bool is_exit_trace_event(int status) {
 	return (status >> 8 == (SIGTRAP | (PTRACE_EVENT_EXIT << 8)));
 }
 
@@ -160,7 +147,8 @@ bool in_64bit_segment() {
  * @param edbIsIn64BitSegment
  * @return
  */
-bool os_is_64_bit(bool edbIsIn64BitSegment) {
+bool os_is_64_bit() {
+	bool edbIsIn64BitSegment = in_64bit_segment();
 	bool osIs64Bit;
 
 	if (edbIsIn64BitSegment) {
@@ -190,8 +178,7 @@ bool os_is_64_bit(bool edbIsIn64BitSegment) {
  */
 DebuggerCore::DebuggerCore()
 #if defined(EDB_X86) || defined(EDB_X86_64)
-	: edbIsIn64BitSegment_(in_64bit_segment()),
-	  osIs64Bit_(os_is_64_bit(edbIsIn64BitSegment_)),
+	: osIs64Bit_(os_is_64_bit()),
 	  userCodeSegment32_(osIs64Bit_ ? 0x23 : 0x73),
 	  userCodeSegment64_(osIs64Bit_ ? 0x33 : 0xfff8), // RPL 0 can't appear in user segment registers, so 0xfff8 is safe
 	  userStackSegment_(osIs64Bit_ ? 0x2b : 0x7b)
@@ -209,12 +196,10 @@ DebuggerCore::DebuggerCore()
 		QSettings settings;
 		const bool warn = settings.value("DebuggerCore/warn_on_broken_proc_mem.enabled", true).toBool();
 		if (warn) {
-			auto dialog = new DialogMemoryAccess(nullptr);
+			auto dialog = std::make_unique<DialogMemoryAccess>(nullptr);
 			dialog->exec();
 
 			settings.setValue("DebuggerCore/warn_on_broken_proc_mem.enabled", dialog->warnNextTime());
-
-			delete dialog;
 		}
 	}
 }
@@ -339,7 +324,7 @@ Status DebuggerCore::ptraceContinue(edb::tid_t tid, long status) {
 			qWarning() << "Unable to continue thread" << tid << ": PTRACE_CONT failed:" << strError;
 			return Status(strError);
 		}
-		waitedThreads_.remove(tid);
+		waitedThreads_.erase(tid);
 		return Status::Ok;
 	}
 	return Status(tr("ptrace_continue(): waited_threads_ doesn't contain tid %1").arg(tid));
@@ -362,7 +347,7 @@ Status DebuggerCore::ptraceStep(edb::tid_t tid, long status) {
 			qWarning() << "Unable to step thread" << tid << ": PTRACE_SINGLESTEP failed:" << strError;
 			return Status(strError);
 		}
-		waitedThreads_.remove(tid);
+		waitedThreads_.erase(tid);
 		return Status::Ok;
 	}
 	return Status(tr("ptrace_step(): waited_threads_ doesn't contain tid %1").arg(tid));
@@ -445,7 +430,7 @@ void DebuggerCore::handleThreadExit(edb::tid_t tid, int status) {
 	Q_UNUSED(status)
 
 	threads_.remove(tid);
-	waitedThreads_.remove(tid);
+	waitedThreads_.erase(tid);
 }
 
 /**
@@ -463,9 +448,9 @@ std::shared_ptr<IDebugEvent> DebuggerCore::handleThreadCreate(edb::tid_t tid, in
 
 		auto new_tid = static_cast<edb::tid_t>(message);
 
-		auto newThread = std::make_shared<PlatformThread>(this, process_, new_tid);
+		auto new_thread = std::make_shared<PlatformThread>(this, process_, new_tid);
 
-		threads_.insert(new_tid, newThread);
+		threads_.insert(new_tid, new_thread);
 
 		int thread_status = 0;
 		if (!util::contains(waitedThreads_, new_tid)) {
@@ -484,20 +469,19 @@ std::shared_ptr<IDebugEvent> DebuggerCore::handleThreadCreate(edb::tid_t tid, in
 			qWarning("handle_event(): new thread [%d] received an event besides SIGSTOP: status=0x%x", static_cast<int>(new_tid), thread_status);
 		}
 
-		newThread->status_ = thread_status;
+		new_thread->status_ = thread_status;
 
 		// copy the hardware debug registers from the current thread to the new thread
 		if (process_) {
 			if (auto cur_thread = process_->currentThread()) {
+				auto old_thread = std::static_pointer_cast<PlatformThread>(cur_thread);
 				for (size_t i = 0; i < 8; ++i) {
-					auto new_thread = std::static_pointer_cast<PlatformThread>(newThread);
-					auto old_thread = std::static_pointer_cast<PlatformThread>(cur_thread);
 					new_thread->setDebugRegister(i, old_thread->getDebugRegister(i));
 				}
 			}
 		}
 
-		newThread->resume();
+		new_thread->resume();
 	}
 
 	ptraceContinue(tid, 0);
@@ -552,14 +536,14 @@ std::shared_ptr<IDebugEvent> DebuggerCore::handleEvent(edb::tid_t tid, int statu
 	}
 
 	/* NOTE(eteran): OK, so when we get an event, we generally want to stop
-	 * any other threads as well. So we will call stop_threads() below
+	 * any other threads as well. So we will call stopThreads() below
 	 * which sends a SIGSTOP.
 	 *
 	 * We need to be very careful to avoid those future events causing the
 	 * active thread to be set, because we want it to remain set to the thread
 	 * which recieved the initial signal. This is all so that later when the
 	 * user clicks resume, that the correct active thread gets (or doesn't)
-	 * get signals, and the rest get resumed properly.
+	 * get signaled, and the rest get resumed properly.
 	 *
 	 * To do this, we simply only alter the activeThread_ variable if this
 	 * event was the first we saw after a resume/run (phew!).*/
@@ -882,7 +866,7 @@ void DebuggerCore::detectCpuMode() {
  * @param tty
  * @return
  */
-Status DebuggerCore::open(const QString &path, const QString &cwd, const QList<QByteArray> &args, const QString &tty) {
+Status DebuggerCore::open(const QString &path, const QString &cwd, const QList<QByteArray> &args, const QString &input, const QString &output) {
 
 	endDebugSession();
 
@@ -903,15 +887,22 @@ Status DebuggerCore::open(const QString &path, const QString &cwd, const QList<Q
 		ptraceTraceme();
 
 		// redirect it's I/O
-		if (!tty.isEmpty()) {
-			FILE *const std_out = freopen(qPrintable(tty), "r+b", stdout);
-			FILE *const std_in  = freopen(qPrintable(tty), "r+b", stdin);
-			FILE *const std_err = freopen(qPrintable(tty), "r+b", stderr);
+		FILE *std_in  = nullptr;
+		FILE *std_out = nullptr;
+		FILE *std_err = nullptr;
 
-			Q_UNUSED(std_out)
-			Q_UNUSED(std_in)
-			Q_UNUSED(std_err)
+		if (!input.isEmpty()) {
+			std_in = freopen(qPrintable(input), "rb", stdin);
 		}
+
+		if (!output.isEmpty()) {
+			std_out = freopen(qPrintable(output), "wb", stdout);
+			std_err = freopen(qPrintable(output), "wb", stderr);
+		}
+
+		Q_UNUSED(std_in)
+		Q_UNUSED(std_out)
+		Q_UNUSED(std_err)
 
 		if (edb::v1::config().disableASLR) {
 			disable_aslr();
@@ -939,7 +930,7 @@ Status DebuggerCore::open(const QString &path, const QString &cwd, const QList<Q
 		return Status(tr("Failed to fork"));
 	default:
 		// parent
-		do {
+		{
 			reset();
 
 			int status;
@@ -996,8 +987,7 @@ Status DebuggerCore::open(const QString &path, const QString &cwd, const QList<Q
 			detectCpuMode();
 
 			return Status::Ok;
-		} while (0);
-		break;
+		}
 	}
 }
 
@@ -1038,7 +1028,7 @@ QMap<edb::pid_t, std::shared_ptr<IProcess>> DebuggerCore::enumerateProcesses() c
 
 	for (const QFileInfo &info : entries) {
 		const QString filename = info.fileName();
-		if (is_numeric(filename)) {
+		if (util::is_numeric(filename)) {
 			const edb::pid_t pid = filename.toInt();
 
 			// NOTE(eteran): the const_cast is reasonable here.
